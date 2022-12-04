@@ -10,7 +10,7 @@ import (
 
 	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	selinux "github.com/opencontainers/selinux/go-selinux"
+	"github.com/opencontainers/selinux/go-selinux"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 	"golang.org/x/sys/unix"
@@ -163,6 +163,7 @@ func createPidFile(path string, process *libcontainer.Process) error {
 }
 
 func createContainer(context *cli.Context, id string, spec *specs.Spec) (*libcontainer.Container, error) {
+	// 判断是否使用非root的cgroup
 	rootlessCg, err := shouldUseRootlessCgroupManager(context)
 	if err != nil {
 		return nil, err
@@ -181,6 +182,7 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (*libcon
 	}
 
 	root := context.GlobalString("root")
+	// 创建一个容器，对container的root目录进行设置。容器状态为stopped
 	return libcontainer.Create(root, id, config)
 }
 
@@ -204,12 +206,15 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	var err error
 	defer func() {
 		if err != nil {
+			// 运行结束后会进行container的销毁，实际调用destroy函数
 			r.destroy()
 		}
 	}()
 	if err = r.checkTerminal(config); err != nil {
 		return -1, err
 	}
+	// 创建一个lib container的process结构体对象，该对象是容器进程的抽象结构。
+	// 主要统一配置应用
 	process, err := newProcess(*config)
 	if err != nil {
 		return -1, err
@@ -218,6 +223,7 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	// Populate the fields that come from runner.
 	process.Init = r.init
 	process.SubCgroupPaths = r.subCgroupPaths
+	// 设定的fd从3开始加
 	if len(r.listenFDs) > 0 {
 		process.Env = append(process.Env, "LISTEN_FDS="+strconv.Itoa(len(r.listenFDs)), "LISTEN_PID=1")
 		process.ExtraFiles = append(process.ExtraFiles, r.listenFDs...)
@@ -242,7 +248,9 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	// Setting up IO is a two stage process. We need to modify process to deal
 	// with detaching containers, and then we get a tty after the container has
 	// started.
+	// 如果启动subreaper就会设置1号进程是孤儿进程的托管者
 	handler := newSignalHandler(r.enableSubreaper, r.notifySocket)
+	// 设置进程的IO
 	tty, err := setupIO(process, rootuid, rootgid, config.Terminal, detach, r.consoleSocket)
 	if err != nil {
 		return -1, err
@@ -340,6 +348,7 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 	if err := revisePidFile(context); err != nil {
 		return -1, err
 	}
+	// 读取配置文件，进行简单的检查和赋值
 	spec, err := setupSpec(context)
 	if err != nil {
 		return -1, err
@@ -350,6 +359,7 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 		return -1, errEmptyID
 	}
 
+	// socket可以接收整个创建过程的动态变化
 	notifySocket := newNotifySocket(context, os.Getenv("NOTIFY_SOCKET"), id)
 	if notifySocket != nil {
 		notifySocket.setupSpec(spec)
@@ -371,13 +381,17 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 		}
 	}
 
-	// Support on-demand socket activation by passing file descriptors into the container init process.
+	// extraFiles文件描述符，主要用于给init进程读取参数使用
+	// 一个进程有0(标准输入),1(标准输出),2(标准错误)三个标准文件描述符
+	// 在此之外接收的文件描述符称为extraFiles
 	listenFDs := []*os.File{}
 	if os.Getenv("LISTEN_FDS") != "" {
 		listenFDs = activation.Files(false)
 	}
 
+	// 配置内容装载后运行init进程
 	r := &runner{
+		// 是否指定当前进程不收集僵尸进程
 		enableSubreaper: !context.Bool("no-subreaper"),
 		shouldDestroy:   !context.Bool("keep"),
 		container:       container,

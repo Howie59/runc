@@ -8,3 +8,4 @@ man/man8
 release
 Vagrantfile
 .vagrant
+.idea/

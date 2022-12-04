@@ -13,7 +13,7 @@ import (
 	"time"
 
 	systemdDbus "github.com/coreos/go-systemd/v22/dbus"
-	dbus "github.com/godbus/dbus/v5"
+	"github.com/godbus/dbus/v5"
 	"github.com/opencontainers/runc/libcontainer/cgroups"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/devices"
@@ -332,7 +332,7 @@ func getwd() (wd string, err error) {
 // CreateLibcontainerConfig creates a new libcontainer configuration from a
 // given specification and a cgroup name
 func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
-	// runc's cwd will always be the bundle path
+	// 如果没有执行，则为当前执行的路径
 	cwd, err := getwd()
 	if err != nil {
 		return nil, err
@@ -349,6 +349,7 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 	for k, v := range spec.Annotations {
 		labels = append(labels, k+"="+v)
 	}
+	// 现有的createOpts组装到最终的config上面
 	config := &configs.Config{
 		Rootfs:          rootfsPath,
 		NoPivotRoot:     opts.NoPivotRoot,
@@ -360,6 +361,7 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 		RootlessCgroups: opts.RootlessCgroups,
 	}
 
+	// 磁盘挂载点
 	for _, m := range spec.Mounts {
 		cm, err := createLibcontainerMount(cwd, m)
 		if err != nil {
@@ -367,7 +369,7 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 		}
 		config.Mounts = append(config.Mounts, cm)
 	}
-
+	// 创建挂载分区(默认挂载分区AllowedDevices和OCI规范的分区)
 	defaultDevs, err := createDevices(spec, config)
 	if err != nil {
 		return nil, err
@@ -393,6 +395,7 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 			}
 		}
 
+		// 默认namespace为pid，network，ipc，uts，mount
 		for _, ns := range spec.Linux.Namespaces {
 			t, exists := namespaceMapping[ns.Type]
 			if !exists {
@@ -403,6 +406,7 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 			}
 			config.Namespaces.Add(t, ns.Path)
 		}
+		// 如果存在network ns就设置loopback回环地址
 		if config.Namespaces.Contains(configs.NEWNET) && config.Namespaces.PathOf(configs.NEWNET) == "" {
 			config.Networks = []*configs.Network{
 				{
@@ -410,6 +414,7 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 				},
 			}
 		}
+		// 如果存在user ns就设置user的rootID groupID
 		if config.Namespaces.Contains(configs.NEWUSER) {
 			if err := setupUserNamespace(spec, config); err != nil {
 				return nil, err
@@ -482,6 +487,7 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 		config.NoNewPrivileges = spec.Process.NoNewPrivileges
 		config.Umask = spec.Process.User.Umask
 		config.ProcessLabel = spec.Process.SelinuxLabel
+		// 赋予容器部分root能力
 		if spec.Process.Capabilities != nil {
 			config.Capabilities = &configs.Capabilities{
 				Bounding:    spec.Process.Capabilities.Bounding,
@@ -492,6 +498,18 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 			}
 		}
 	}
+	// 容器生命周期钩子
+	/*
+			preStart : 在启动init 进程前的hook，根据注释该hook已经被废弃
+			CreateRuntime : 该hook的执行期是，在环境变量执行后，及pivot_root执行前，需要等init进程通知 create 进程；
+			CreateContainer : CreateRuntime执行完毕后，就执行当前hook
+		    Poststart :init 进程启动后, 即容器环境准备完毕, 用户进程执行前；
+			StartContainer : init 进程启动后, 即容器环境准备完毕，但用户进程还没启动； created状态的时候
+			  * 上面 Poststart， StartContainer 两个看起来比较相似，大部分同学可能认识poststart；
+		        	poststart 是在 create进程收到 init 进程已经初始化完成了后执行的；
+		        	startContainer 是 init进程收到 start 进程的信息后执行的，这个执行也是在启动用户进程前；
+			Poststop
+	*/
 	createHooks(spec, config)
 	config.Version = specs.Version
 	return config, nil

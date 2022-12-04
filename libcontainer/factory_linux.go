@@ -160,7 +160,7 @@ func Load(root, id string) (*Container, error) {
 // to read the configuration and state. This is a low level implementation
 // detail of the reexec and should not be consumed externally.
 func StartInitialization() (err error) {
-	// Get the INITPIPE.
+	// 获取init pipe(init-c的文件描述符)
 	envInitPipe := os.Getenv("_LIBCONTAINER_INITPIPE")
 	pipefd, err := strconv.Atoi(envInitPipe)
 	if err != nil {
@@ -168,6 +168,7 @@ func StartInitialization() (err error) {
 		logrus.Error(err)
 		return err
 	}
+	// 通过fs建立跟父进程的pipe通信
 	pipe := os.NewFile(uintptr(pipefd), "pipe")
 	defer pipe.Close()
 
@@ -184,7 +185,7 @@ func StartInitialization() (err error) {
 		}
 	}()
 
-	// Only init processes have FIFOFD.
+	// runc create设置子进程模块时使用的环境变量，初始化类型standerr以及exec.fifo管道
 	fifofd := -1
 	envInitType := os.Getenv("_LIBCONTAINER_INITTYPE")
 	it := initType(envInitType)
@@ -217,8 +218,7 @@ func StartInitialization() (err error) {
 		return err
 	}
 
-	// clear the current process's environment to clean any libcontainer
-	// specific env vars.
+	// 清除继承的process's environment
 	os.Clearenv()
 
 	defer func() {
@@ -230,7 +230,7 @@ func StartInitialization() (err error) {
 			}
 		}
 	}()
-
+	
 	i, err := newContainerInit(it, pipe, consoleSocket, fifofd, logPipeFd, mountFds)
 	if err != nil {
 		return err

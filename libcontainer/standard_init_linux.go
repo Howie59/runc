@@ -86,7 +86,9 @@ func (l *linuxStandardInit) Init() error {
 	// initialises the labeling system
 	selinux.GetEnabled()
 
-	// We don't need the mountFds after prepareRootfs() nor if it fails.
+	// 准备rootfs，主要是根目录挂载，外部卷挂载，创建设备
+	// 通知runc create进行pre start的hook调用，pivot_root 或 change_root，限定进程使用根目录。
+	// 需要注意一点，容器的pre start的hook调用发生在限定容器的根目录之前。
 	err := prepareRootfs(l.pipe, l.config, l.mountFds)
 	for _, m := range l.mountFds {
 		if m == -1 {
@@ -192,8 +194,8 @@ func (l *linuxStandardInit) Init() error {
 	if unix.Getppid() != l.parentPid {
 		return unix.Kill(unix.Getpid(), unix.SIGKILL)
 	}
-	// Check for the arg before waiting to make sure it exists and it is
-	// returned as a create time error.
+	// 查看可执行文件在容器内是否存在, 因为已经此时容器的上下文环境，rootfs等已全部准备就绪
+	// 在当前的根文件系统，应该是能找到一个可执行的runc文件
 	name, err := exec.LookPath(l.config.Args[0])
 	if err != nil {
 		return err
@@ -229,15 +231,15 @@ func (l *linuxStandardInit) Init() error {
 		return &os.PathError{Op: "close log pipe", Path: "fd " + strconv.Itoa(l.logFd), Err: err}
 	}
 
-	// Wait for the FIFO to be opened on the other side before exec-ing the
-	// user process. We open it through /proc/self/fd/$fd, because the fd that
-	// was given to us was an O_PATH fd to the fifo itself. Linux allows us to
-	// re-open an O_PATH fd through /proc.
+	// 在执行容器启动命令前，等待exec.fifo管道在另一端被打开
+	// /proc/self/fd/ 下可以看到一个 fd -> /run/runc/<containerID>/
 	fifoPath := "/proc/self/fd/" + strconv.Itoa(l.fifoFd)
 	fd, err := unix.Open(fifoPath, unix.O_WRONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return &os.PathError{Op: "open exec fifo", Path: fifoPath, Err: err}
 	}
+	//向exec.fifo管道写入数据，然后init进程阻塞，等待runc start调用，打开exec.fifo管道读取内容，然后执行容器启动命令。
+	// 读取完管道内容，管道通信就会结束，不会继续阻塞，这里涉及 socketpair 的知识点；
 	if _, err := unix.Write(fd, []byte("0")); err != nil {
 		return &os.PathError{Op: "write exec fifo", Path: fifoPath, Err: err}
 	}
@@ -257,5 +259,6 @@ func (l *linuxStandardInit) Init() error {
 		return err
 	}
 
+	// 用户的命令替换init命令
 	return system.Exec(name, l.config.Args[0:], os.Environ())
 }

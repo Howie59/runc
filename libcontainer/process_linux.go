@@ -109,6 +109,7 @@ func (p *setnsProcess) start() (retErr error) {
 	}()
 
 	if p.bootstrapData != nil {
+		// 将bootstrapData写入init通道，init进程收到后会设置自身运行的namespace等
 		if _, err := io.Copy(p.messageSockPair.parent, p.bootstrapData); err != nil {
 			return fmt.Errorf("error copying bootstrap data to pipe: %w", err)
 		}
@@ -438,7 +439,9 @@ func (p *initProcess) start() (retErr error) {
 	}
 	p.setExternalDescriptors(fds)
 
-	// Wait for our first child to exit
+	// 等待nsexec进程执行，这部分因为go语言对于namespace支持缺陷，
+	// 导致这部分实现没有使用go语言，采用C语言实现，通过init-c 这个管道获取 pid信息，
+	// 然后接收上一步中的bootstrapData，设置进程的namespace，最后runc init go语言实现部分逻辑。
 	if err := p.waitForChildExit(childPid); err != nil {
 		return fmt.Errorf("error waiting for our first child to exit: %w", err)
 	}
@@ -449,6 +452,7 @@ func (p *initProcess) start() (retErr error) {
 	if err := p.updateSpecState(); err != nil {
 		return fmt.Errorf("error updating spec state: %w", err)
 	}
+	// 发送init配置给init进程
 	if err := p.sendConfig(); err != nil {
 		return fmt.Errorf("error sending config to init process: %w", err)
 	}

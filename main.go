@@ -208,6 +208,12 @@ func configLogrus(context *cli.Context) error {
 		return errors.New("invalid log-format: " + f)
 	}
 
+	/*
+		O_CREATE-->如果不存在则创建一个文件
+		O_WRONLY-->只写模式打开文件
+		O_APPEND-->写操作时将数据附加到文件尾部
+		O_SYNC-->文件同步IO
+	 */
 	if file := context.GlobalString("log"); file != "" {
 		f, err := os.OpenFile(file, os.O_CREATE|os.O_WRONLY|os.O_APPEND|os.O_SYNC, 0o644)
 		if err != nil {

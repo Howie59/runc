@@ -61,6 +61,7 @@ func Execv(cmd string, args []string, env []string) error {
 
 func Exec(cmd string, args []string, env []string) error {
 	for {
+		// exec会让子进程替代掉父进程的上下文空间，也就是替代init进程空间
 		err := unix.Exec(cmd, args, env)
 		if err != unix.EINTR { //nolint:errorlint // unix errors are bare
 			return &os.PathError{Op: "exec", Path: cmd, Err: err}

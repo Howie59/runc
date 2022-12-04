@@ -209,6 +209,7 @@ func (c *Container) Start(process *Process) error {
 		return errors.New("can't start container with SkipDevices set")
 	}
 	if process.Init {
+		// 创建阻塞队列
 		if err := c.createExecFifo(); err != nil {
 			return err
 		}
@@ -245,10 +246,13 @@ func (c *Container) Exec() error {
 func (c *Container) exec() error {
 	path := filepath.Join(c.root, execFifoFilename)
 	pid := c.initProcess.pid()
+	// 读取 /run/runc/<containerID>/exec.fifo 管道，由于socketpair管道特性，父进程(init进程)被读取信息后便不会阻塞，继续往下执行，关闭socket
+	// 参考 runc/libcontainer/containner_linux.go Init 206行
 	blockingFifoOpenCh := awaitFifoOpen(path)
 	for {
 		select {
 		case result := <-blockingFifoOpenCh:
+			// handleFifoResult 最后读完内容后会删除掉 exec.fifo
 			return handleFifoResult(result)
 
 		case <-time.After(time.Millisecond * 100):
@@ -315,11 +319,13 @@ type openResult struct {
 }
 
 func (c *Container) start(process *Process) (retErr error) {
+	// 创建父进程(create)，子进程是init进程
 	parent, err := c.newParentProcess(process)
 	if err != nil {
 		return fmt.Errorf("unable to create new parent process: %w", err)
 	}
 
+	// 读取child日志文件通道
 	logsDone := parent.forwardChildLogs()
 	if logsDone != nil {
 		defer func() {
@@ -344,6 +350,7 @@ func (c *Container) start(process *Process) (retErr error) {
 				return err
 			}
 
+			// 执行poststart hook(容器创建成功后，运行前的任务)
 			if err := c.config.Hooks[configs.Poststart].RunHooks(s); err != nil {
 				if err := ignoreTerminateErrors(parent.terminate()); err != nil {
 					logrus.Warn(fmt.Errorf("error running poststart hook: %w", err))
@@ -434,10 +441,12 @@ func (c *Container) includeExecFifo(cmd *exec.Cmd) error {
 }
 
 func (c *Container) newParentProcess(p *Process) (parentProcess, error) {
+	// 创建init父子进程的通信管道(准备从当前进程创建容器)[init-p，init-c]
 	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
 	if err != nil {
 		return nil, fmt.Errorf("unable to create init pipe: %w", err)
 	}
+	// 创建管道文件进行进程间通信
 	messageSockPair := filePair{parentInitPipe, childInitPipe}
 
 	parentLogPipe, childLogPipe, err := os.Pipe()
@@ -456,6 +465,7 @@ func (c *Container) newParentProcess(p *Process) (parentProcess, error) {
 	// for container rootfs escape (and not doing it in `runc exec` avoided
 	// that problem), but we no longer do that. However, there's no need to do
 	// this for `runc exec` so we just keep it this way to be safe.
+	// 将exec.info加入extraFiles
 	if err := c.includeExecFifo(cmd); err != nil {
 		return nil, fmt.Errorf("unable to setup exec fifo: %w", err)
 	}
@@ -528,7 +538,9 @@ func (c *Container) shouldSendMountSources() bool {
 	return false
 }
 
+// 两个管道通信
 func (c *Container) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPair, logFilePair filePair) (*initProcess, error) {
+	// 设置standard
 	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initStandard))
 	nsMaps := make(map[configs.NamespaceType]string)
 	for _, ns := range c.config.Namespaces {
@@ -575,6 +587,7 @@ func (c *Container) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPair, l
 		cmd:             cmd,
 		messageSockPair: messageSockPair,
 		logFilePair:     logFilePair,
+		// resume/pause
 		manager:         c.cgroupManager,
 		intelRdtManager: c.intelRdtManager,
 		config:          c.newInitConfig(p),
